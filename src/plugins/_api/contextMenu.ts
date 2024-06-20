@@ -18,6 +18,38 @@
 
 import { Devs } from "@utils/constants";
 import definePlugin from "@utils/types";
+import { filters, waitFor, waitForSubscriptions } from "@webpack";
+
+/**
+ * The last var name which the ContextMenu module was WebpackRequire'd and assigned to
+ */
+let lastVarName = "";
+
+/**
+ * The key exporting the ContextMenu module "Menu"
+ */
+let exportKey: PropertyKey = "";
+
+/**
+ * The id of the module exporting the ContextMenu module "Menu"
+ */
+let modId: PropertyKey = "";
+
+let mangledCallback: (...args: any[]) => any;
+waitFor(filters.byCode("Menu API only allows Items and groups of Items as children."), mangledCallback = (_, modInfo) => {
+    exportKey = modInfo.exportKey;
+    modId = modInfo.id;
+
+    waitForSubscriptions.delete(nonMangledCallback);
+});
+
+let nonMangledCallback: (...args: any[]) => any;
+waitFor(filters.byProps("Menu", "MenuItem"), nonMangledCallback = (_, modInfo) => {
+    exportKey = "Menu";
+    modId = modInfo.id;
+
+    waitForSubscriptions.delete(mangledCallback);
+});
 
 export default definePlugin({
     name: "ContextMenuAPI",
@@ -34,12 +66,26 @@ export default definePlugin({
             }
         },
         {
-            find: ".Menu,{",
+            find: "navId:",
             all: true,
-            replacement: {
-                match: /Menu,{(?<=\.jsxs?\)\(\i\.Menu,{)/g,
-                replace: "$&contextMenuApiArguments:typeof arguments!=='undefined'?arguments:[],"
-            }
+            noWarn: true,
+            replacement: [
+                {
+                    get match() {
+                        return RegExp(`${String(modId)}(?<=(\\i)=.+?)`);
+                    },
+                    replace: (id, varName) => {
+                        lastVarName = varName;
+                        return id;
+                    }
+                },
+                {
+                    get match() {
+                        return RegExp(`${String(exportKey)},{(?<=${lastVarName}\\.${String(exportKey)},{)`, "g");
+                    },
+                    replace: "$&contextMenuAPIArguments:typeof arguments!=='undefined'?arguments:[],"
+                }
+            ]
         }
     ]
 });

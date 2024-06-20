@@ -24,7 +24,7 @@ import { WebpackInstance } from "discord-types/other";
 
 import { traceFunction } from "../debug/Tracer";
 import { patches } from "../plugins";
-import { _initWebpack, beforeInitListeners, factoryListeners, moduleListeners, subscriptions, wreq } from ".";
+import { _initWebpack, beforeInitListeners, factoryListeners, moduleListeners, waitForSubscriptions, wreq } from ".";
 
 const logger = new Logger("WebpackInterceptor", "#8caaee");
 const initCallbackRegex = canonicalizeMatch(/{return \i\(".+?"\)}/);
@@ -204,8 +204,7 @@ function patchFactories(factories: Record<string, (module: any, exports: any, re
             }
 
             exports = module.exports;
-
-            if (!exports) return;
+            if (exports == null) return;
 
             // There are (at the time of writing) 11 modules exporting the window
             // Make these non enumerable to improve webpack search performance
@@ -240,32 +239,37 @@ function patchFactories(factories: Record<string, (module: any, exports: any, re
 
             for (const callback of moduleListeners) {
                 try {
-                    callback(exports, id);
+                    callback(exports, { id, factory: originalMod });
                 } catch (err) {
                     logger.error("Error in Webpack module listener:\n", err, callback);
                 }
             }
 
-            for (const [filter, callback] of subscriptions) {
+            for (const [filter, callback] of waitForSubscriptions) {
                 try {
-                    if (exports && filter(exports)) {
-                        subscriptions.delete(filter);
-                        callback(exports, id);
-                    } else if (typeof exports === "object") {
-                        if (exports.default && filter(exports.default)) {
-                            subscriptions.delete(filter);
-                            callback(exports.default, id);
-                        } else {
-                            for (const nested in exports) if (nested.length <= 3) {
-                                if (exports[nested] && filter(exports[nested])) {
-                                    subscriptions.delete(filter);
-                                    callback(exports[nested], id);
-                                }
-                            }
+                    if (filter(exports)) {
+                        waitForSubscriptions.delete(filter);
+                        callback(exports, { id, factory: originalMod, exportKey: "" });
+                        continue;
+                    }
+
+                    if (typeof exports !== "object") continue;
+
+                    if (exports.default != null && filter(exports.default)) {
+                        waitForSubscriptions.delete(filter);
+                        callback(exports.default, { id, factory: originalMod, exportKey: "default" });
+                        continue;
+                    }
+
+                    for (const key in exports) if (key.length <= 3) {
+                        if (exports[key] != null && filter(exports[key])) {
+                            waitForSubscriptions.delete(filter);
+                            callback(exports[key], { id, factory: originalMod, exportKey: key });
+                            break;
                         }
                     }
                 } catch (err) {
-                    logger.error("Error while firing callback for Webpack subscription:\n", err, filter, callback);
+                    logger.error("Error while firing callback for Webpack waitFor subscription:\n", err, filter, callback);
                 }
             }
         } as any as { toString: () => string, original: any, (...args: any[]): void; };

@@ -68,11 +68,21 @@ export const filters = {
     }
 };
 
-export type CallbackFn = (mod: any, id: string) => void;
+export type ModListenerInfo = {
+    id: PropertyKey;
+    factory: (module: any, exports: any, require: WebpackInstance) => void;
+};
 
-export const subscriptions = new Map<FilterFn, CallbackFn>();
-export const moduleListeners = new Set<CallbackFn>();
+export type ModCallbackInfo = ModListenerInfo & {
+    exportKey: PropertyKey;
+};
+
+export type ModListenerFn = (module: any, info: ModListenerInfo) => void;
+export type ModCallbackFn = (module: any, info: ModCallbackInfo) => void;
+
 export const factoryListeners = new Set<(factory: (module: any, exports: any, require: WebpackInstance) => void) => void>();
+export const moduleListeners = new Set<ModListenerFn>();
+export const waitForSubscriptions = new Map<FilterFn, ModCallbackFn>();
 export const beforeInitListeners = new Set<(wreq: WebpackInstance) => void>();
 
 export function _initWebpack(webpackRequire: WebpackInstance) {
@@ -106,7 +116,7 @@ export const find = traceFunction("find", function find(filter: FilterFn, { isIn
 
     for (const key in cache) {
         const mod = cache[key];
-        if (!mod.loaded || !mod?.exports) continue;
+        if (!mod?.loaded || mod?.exports == null) continue;
 
         if (filter(mod.exports)) {
             return isWaitFor ? [mod.exports, key] : mod.exports;
@@ -114,16 +124,13 @@ export const find = traceFunction("find", function find(filter: FilterFn, { isIn
 
         if (typeof mod.exports !== "object") continue;
 
-        if (mod.exports.default && filter(mod.exports.default)) {
-            const found = mod.exports.default;
-            return isWaitFor ? [found, key] : found;
+        if (mod.exports.default != null && filter(mod.exports.default)) {
+            return isWaitFor ? [mod.exports.default, key] : mod.exports.default;
         }
 
-        // the length check makes search about 20% faster
-        for (const nestedMod in mod.exports) if (nestedMod.length <= 3) {
-            const nested = mod.exports[nestedMod];
-            if (nested && filter(nested)) {
-                return isWaitFor ? [nested, key] : nested;
+        for (const key in mod.exports) if (key.length <= 3) {
+            if (mod.exports[key] != null && filter(mod.exports[key])) {
+                return isWaitFor ? [mod.exports[key], key] : mod.exports[key];
             }
         }
     }
@@ -142,18 +149,25 @@ export function findAll(filter: FilterFn) {
     const ret = [] as any[];
     for (const key in cache) {
         const mod = cache[key];
-        if (!mod.loaded || !mod?.exports) continue;
+        if (!mod?.loaded || mod?.exports == null) continue;
 
-        if (filter(mod.exports))
+        if (filter(mod.exports)) {
             ret.push(mod.exports);
-        else if (typeof mod.exports !== "object")
             continue;
+        }
 
-        if (mod.exports.default && filter(mod.exports.default))
+        if (typeof mod.exports !== "object") continue;
+
+        if (mod.exports.default != null && filter(mod.exports.default)) {
             ret.push(mod.exports.default);
-        else for (const nestedMod in mod.exports) if (nestedMod.length <= 3) {
-            const nested = mod.exports[nestedMod];
-            if (nested && filter(nested)) ret.push(nested);
+            continue;
+        }
+
+        for (const key in mod.exports) if (key.length <= 3) {
+            if (mod.exports[key] && filter(mod.exports[key])) {
+                ret.push(mod.exports[key]);
+                break;
+            }
         }
     }
 
@@ -190,7 +204,7 @@ export const findBulk = traceFunction("findBulk", function findBulk(...filterFns
     outer:
     for (const key in cache) {
         const mod = cache[key];
-        if (!mod.loaded || !mod?.exports) continue;
+        if (!mod.loaded || mod?.exports == null) continue;
 
         for (let j = 0; j < length; j++) {
             const filter = filters[j];
@@ -204,26 +218,23 @@ export const findBulk = traceFunction("findBulk", function findBulk(...filterFns
                 break;
             }
 
-            if (typeof mod.exports !== "object")
-                continue;
+            if (typeof mod.exports !== "object") continue;
 
             if (mod.exports.default && filter(mod.exports.default)) {
                 results[j] = mod.exports.default;
                 filters[j] = undefined;
                 if (++found === length) break outer;
-                break;
+                continue;
             }
 
-            for (const nestedMod in mod.exports)
-                if (nestedMod.length <= 3) {
-                    const nested = mod.exports[nestedMod];
-                    if (nested && filter(nested)) {
-                        results[j] = nested;
-                        filters[j] = undefined;
-                        if (++found === length) break outer;
-                        continue outer;
-                    }
+            for (const key in mod.exports) if (key.length <= 3) {
+                if (mod.exports[key] && filter(mod.exports[key])) {
+                    results[j] = mod.exports[key];
+                    filters[j] = undefined;
+                    if (++found === length) break outer;
+                    break;
                 }
+            }
         }
     }
 
@@ -293,7 +304,7 @@ export const lazyWebpackSearchHistory = [] as Array<["find" | "findByProps" | "f
  * Note that the example below exists already as an api, see {@link findByPropsLazy}
  * @example const mod = proxyLazy(() => findByProps("blah")); console.log(mod.blah);
  */
-export function proxyLazyWebpack<T = any>(factory: () => any, attempts?: number) {
+export function proxyLazyWebpack<T = any>(factory: () => T, attempts?: number) {
     if (IS_REPORTER) lazyWebpackSearchHistory.push(["proxyLazyWebpack", [factory]]);
 
     return proxyLazy<T>(factory, attempts);
@@ -446,25 +457,27 @@ export function findExportedComponentLazy<T extends object = any>(...props: stri
  *          })
  */
 export const mapMangledModule = traceFunction("mapMangledModule", function mapMangledModule<S extends string>(code: string, mappers: Record<S, FilterFn>): Record<S, any> {
-    const exports = {} as Record<S, any>;
+    const mapping = {} as Record<S, any>;
 
     const id = findModuleId(code);
-    if (id === null)
-        return exports;
+    if (id === null) return mapping;
 
-    const mod = wreq(id as any);
+    const exports = wreq(id as any);
+
     outer:
-    for (const key in mod) {
-        const member = mod[key];
+    for (const key in exports) {
+        const value = exports[key];
+
         for (const newName in mappers) {
             // if the current mapper matches this module
-            if (mappers[newName](member)) {
-                exports[newName] = member;
+            if (mappers[newName](value)) {
+                mapping[newName] = value;
                 continue outer;
             }
         }
     }
-    return exports;
+
+    return mapping;
 });
 
 /**
@@ -570,7 +583,7 @@ export function extractAndLoadChunksLazy(code: string[], matcher = DefaultExtrac
  * Wait for a module that matches the provided filter to be registered,
  * then call the callback with the module as the first argument
  */
-export function waitFor(filter: string | string[] | FilterFn, callback: CallbackFn, { isIndirect = false }: { isIndirect?: boolean; } = {}) {
+export function waitFor(filter: string | string[] | FilterFn, callback: ModCallbackFn, { isIndirect = false }: { isIndirect?: boolean; } = {}) {
     if (IS_REPORTER && !isIndirect) lazyWebpackSearchHistory.push(["waitFor", Array.isArray(filter) ? filter : [filter]]);
 
     if (typeof filter === "string")
@@ -585,7 +598,7 @@ export function waitFor(filter: string | string[] | FilterFn, callback: Callback
         if (existing) return void callback(existing, id);
     }
 
-    subscriptions.set(filter, callback);
+    waitForSubscriptions.set(filter, callback);
 }
 
 /**
