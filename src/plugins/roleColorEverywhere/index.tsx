@@ -41,6 +41,12 @@ const settings = definePluginSettings({
         description: "Show role colors in the voice chat user list",
         restartNeeded: true
     },
+    chatMessages: {
+        type: OptionType.BOOLEAN,
+        default: false,
+        description: "Show role colors in chat messages",
+        restartNeeded: true
+    },
     reactorsList: {
         type: OptionType.BOOLEAN,
         default: true,
@@ -57,7 +63,7 @@ export default definePlugin({
     patches: [
         // Chat Mentions
         {
-            find: 'location:"UserMention',
+            find: "CLYDE_AI_MENTION_COLOR:null,",
             replacement: [
                 {
                     match: /user:(\i),channel:(\i).{0,400}?"@"\.concat\(.+?\)/,
@@ -65,6 +71,17 @@ export default definePlugin({
                 }
             ],
             predicate: () => settings.store.chatMentions,
+        },
+        // Chat messages
+        {
+            find: "Messages.SOURCE_MESSAGE_DELETED",
+            replacement: [
+                {
+                    match: /ref:\i,className:.{0,20}markup/,
+                    replace: "...$self.getInlineStyle({user:arguments[0].message.author,channelId:arguments[0].message.channel_id}),$&"
+                }
+            ],
+            predicate: () => settings.store.chatMessages,
         },
         // Slate
         {
@@ -101,7 +118,7 @@ export default definePlugin({
             find: "renderPrioritySpeaker",
             replacement: [
                 {
-                    match: /renderName\(\){.+?usernameSpeaking\]:.+?(?=children)/,
+                    match: /renderName\(\).{0,100}speaking:.{50,100}jsx.{5,10}{/,
                     replace: "$&...$self.getVoiceProps(this.props),"
                 }
             ],
@@ -141,7 +158,13 @@ export default definePlugin({
             </span>
         );
     }, { noop: true }),
-
+    getInlineStyle({ user: { id: userId }, guildId, channelId }: { user: { id: string; }; guildId?: string; channelId?: string; }) {
+        return {
+            style: {
+                color: this.getColor(userId, { guildId, channelId })
+            }
+        };
+    },
     getVoiceProps({ user: { id: userId }, guildId }: { user: { id: string; }; guildId: string; }) {
         return {
             style: {
