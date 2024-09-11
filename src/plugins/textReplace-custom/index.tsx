@@ -293,7 +293,7 @@ function applyRules(content: string): string {
 
     if (regexRules) {
         for (const rule of regexRules) {
-            if (content[0] === "/" && content[1] === "t") {
+            if (content.startsWith("/t")) {
                 content = content.substring(2);
                 break;
             }
