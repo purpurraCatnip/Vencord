@@ -121,7 +121,7 @@ export default definePlugin({
             predicate: () => settings.store.memberList,
         },
         {
-            find: ".Messages.THREAD_BROWSER_PRIVATE",
+            find: "#{intl::THREAD_BROWSER_PRIVATE}",
             replacement: [
                 {
                     match: /children:\[\i," — ",\i\]/,
@@ -149,7 +149,7 @@ export default definePlugin({
             predicate: () => settings.store.reactorsList,
         },
         {
-            find: '.Messages.MESSAGE_EDITED,")"',
+            find: "#{intl::MESSAGE_EDITED}",
             replacement: {
                 match: /(?<=isUnsupported\]:(\i)\.isUnsupported\}\),)(?=children:\[)/,
                 replace: "style:{color:$self.useMessageColor($1)},"
